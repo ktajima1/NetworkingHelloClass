@@ -15,8 +15,8 @@ public class UDPReceiver {
         //This is a try-with-resources syntax where the DatagramSocket will be automatically closed once the try block finishes
         //execution
         try (var sock = new DatagramSocket(2323)) {
-            System.out.println(sock.getLocalSocketAddress());
-            System.out.println(sock.getRemoteSocketAddress()); //UDP does not have any connections, so there IS NO remote, only local
+//            System.out.println(sock.getLocalSocketAddress());
+//            System.out.println(sock.getRemoteSocketAddress()); //UDP does not have any connections, so there IS NO remote, only local
             sock.setSoTimeout(5000);
             //if the size of a packet is greater than 512, then the portion of the packet that doesnt fit inside the byte
             //array will be truncated and dropped. If it all fits, then everything is fine. UDP packets have a max size of

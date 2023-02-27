@@ -65,7 +65,6 @@ public class QotD {
                 //Create a datagram packet with the desired address and port number and send the packet to djxmmx server
                 var request = new DatagramPacket(bytes, bytes.length, address, port);
                 sock.send(request);
-
                 //Try block is here to deal with SocketTimeoutExceptions that may occur if receiving packets from
                 //the server takes too long. If SocketTimeoutException occurs, program will ignore the dropped packet
                 //and proceed to request another packet.
