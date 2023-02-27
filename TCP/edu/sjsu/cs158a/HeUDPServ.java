@@ -1,5 +1,6 @@
 package edu.sjsu.cs158a;
 
+import javax.xml.crypto.Data;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -7,6 +8,7 @@ import java.net.*;
 import java.nio.ByteBuffer;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 //ISTG IF SETPORT IS CONSIDERED AN UNEXPECTED ERROR REQUIREMENT, THAT WILL REQUIRE REWORK
 
@@ -20,6 +22,7 @@ public class HeUDPServ {
 
     private static int port;
     private static int convoNum;
+    private static File file; //File to be transferred
 
     public HeUDPServ(String port, int convoNum) {
         this.port = setPort(port);
@@ -57,6 +60,7 @@ public class HeUDPServ {
         //Send server response packet
         dsock.send(response);
     }
+
 
     static DatagramPacket receiveAndSend(DatagramSocket dsock, HeUDPServ client) throws IOException {
         var bytes = new byte[512];
@@ -102,48 +106,25 @@ public class HeUDPServ {
             }
             if(type==TRANSFER) {
                 System.out.println("I've reached file transfer segment");
+                bb.clear();
 
-//                var buff = new byte[100];
-//                var fis = new DigestInputStream(new FileInputStream(file), MessageDigest.getInstance("SHA-256"));
-//                int rc;
-//                int offset = 0;
-//                while ((rc = fis.read(buff)) > 0) {
-//                    // System.out.println("sending offset: " + offset);
-//                    bb.clear().putShort(TRANSFER).putInt(convoNum).putInt(offset).put(buff, 0, rc).flip();
-//                    dpack.setLength(bb.remaining());
-//                    var transferRecv = sendRecv(dsock, dpack);
-//                    recvBB = ByteBuffer.wrap(transferRecv.getData(), transferRecv.getOffset(), transferRecv.getLength());
-//                    checkError(recvBB);
-//                    offset += rc;
-//                }
+                var transFile = new DatagramPacket(bytes, bytes.length);
+                dsock.receive(transFile);
+//                System.out.println(new String(transFile.getData(), 10, transFile.getLength()-10));
 
-//                //Verify that the intro statement is correct and then extract client name
-//                String data = new String(bytes, 2, packet.getLength()-2);
-//                if (!data.split("hello, i am ")[0].equals("")) {
-//                    sendError(dsock, packet.getAddress(), packet.getPort(), "Intro statement is invalid: \"" + data + "\" does not match \"hello, i am \"");
-//                }
-//                String clientName = data.split("hello, i am ")[1];
-//
-//                //Set server response packet's destination address and dest port using source address and src port
-//                bb.clear();
-//                var response = new DatagramPacket(bytes, bytes.length);
-//                response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
-//                response.setPort(packet.getPort());         //Set destination port as the source port of received packet
-//
-//                //Set content of server response packet
-//                bb.putShort(HELLO).putInt(client.getConvoNum()).put(INTRO.getBytes()).put(clientName.getBytes()).flip();
-//                response.setLength(bb.remaining());
-//
-//                //Used for checking contents of server response packet, comment out later
-//                String res = new String(bytes, 6, response.getLength()-6);
-//                System.out.println("HELLO: "+bb.getShort()+" "+bb.getInt()+" "+res);
-//
-//                //Send server response packet
-//                dsock.send(response);
+                //Set server response packet's destination address and dest port using source address and src port
+                var response = new DatagramPacket(bytes, bytes.length);
+                response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
+                response.setPort(packet.getPort());         //Set destination port as the source port of received packet
+
+                bb.putShort(TRANSFER).putInt(client.getConvoNum()).putInt(transFile.getOffset()).flip();
+                response.setLength(bb.remaining());
+
+                dsock.send(response);
             }
 
             if(type==CHECKSUM) {
-
+                System.out.println("Reached checksum segment");
             }
 
 //          Idk if this is needed, but here just in case
