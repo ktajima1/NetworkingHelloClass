@@ -4,12 +4,10 @@ import java.io.*;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-
-//ISTG IF SETPORT IS CONSIDERED AN UNEXPECTED ERROR REQUIREMENT AND NEEDS TO SEND ERROR CODE 5, THAT WILL REQUIRE REWORK
+import java.util.HashMap;
 
 public class HelloUDPServer {
     final static private short HELLO = 1;
@@ -18,41 +16,194 @@ public class HelloUDPServer {
     final static private short ERROR = 5;
     public static final String INTRO = "hello, i am ";
 
-    private static int port;
-    private static int convoNum;
-    private static String clientName;
-    private static File clientFile; //File to be transferred
+    public static int clientCount = 1;
+    public static HashMap<Integer, HelloUDPServer> clientList = new HashMap<>();
 
-    public HelloUDPServer(String port, int convoNum) {
-        this.port = setPort(port);
+    private int convoNum;
+    private String clientName;
+    private  File clientFile; //File to be transferred
+
+    static String usageErrorMissingPort = "Missing required parameter: '<port>'\n" +
+            "Usage: HelloUDPServer <port>\n" +
+            "A UDP server that implements the HelloUDP protocol.\n" +
+            "      <port>   port to listen on.";
+    static String usageErrorInvalidPort = "port must be a number between 0 and 65535\n" +
+            "Usage: HelloUDPServer <port>\n" +
+            "A UDP server that implements the HelloUDP protocol.\n" +
+            "      <port>   port to listen on.";
+
+    public HelloUDPServer(int convoNum) {
         this.convoNum = convoNum;
     }
 
     public static void main(String[] args) throws IOException {
-//        try {
-//            throw new UnknownHostException();
-//        } catch (UnknownHostException u) {
-//            System.out.println(u.getMessage());
-//        }
-        if (args.length==0) {
-            throw new UnknownHostException();
-        }
-        System.out.println("Listening on port " +args[0]);
-        //Client conversation number (will increment as number of clients increase)
-        int convoNum = 1;
-        HelloUDPServer client = new HelloUDPServer(args[0], convoNum);
-        convoNum++; //increment global conversation number
+        //Check whether arguments are valid
+        checkArgs(args);
 
-        try(var sock = new DatagramSocket(client.getPort())) {
-//            System.out.println("I made it here " + client.getPort());
-            while(true) {
-                receiveAndSend(sock, client);
-            }
+        try(var sock = new DatagramSocket(setPort(args[0]))) { //Set port
+            System.out.println("Listening on port " +args[0]);
+            receiveAndSend(sock);
         } catch (SocketException e) {
+            System.out.println("Something happened");
             e.printStackTrace();
         }
     }
 
+    static void receiveAndSend(DatagramSocket dsock) throws IOException {
+        var bytes = new byte[512];
+        var bb = ByteBuffer.wrap(bytes);
+        var packet = new DatagramPacket(bytes, bytes.length);   //Packet to be sent to client
+        var transFile = new DatagramPacket(bytes, bytes.length); //File to be received from transfer
+
+        int count = 1;
+
+        while(true) {
+            short type=4; //Not a valid conversation type, will throw error if type is not changed or is invalid
+            bb.clear();
+            try {
+                dsock.receive(packet);
+
+                //Get Type of conversation
+                type = bb.getShort();
+            } catch (SocketTimeoutException e) {
+//                if(packet.getAddress()==null) {
+//                    System.err.println("Took longer than 3 seconds to receive client");
+//                    System.exit(2);
+//                }
+//                else {sendError(dsock, packet.getAddress(), packet.getPort(), "Took longer than 10 seconds to receive client response, try again");}
+            }
+            //Receive and respond to initial HELLO packet from client
+            if(type==HELLO) {
+                //Create new client with unique conversation ID, checks whether port # is valid as well
+                int clientID = clientCount;
+                HelloUDPServer client = new HelloUDPServer(clientID);
+                clientList.put(clientID, client);
+
+                System.out.println("From " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+                clientCount++; //increment global conversation number
+
+                bb.clear();
+                //Verify that the intro statement is correct and then extract client name
+                String data = new String(bytes, 2, packet.getLength()-2);
+                if (!data.split(INTRO)[0].equals("")) {
+                    sendError(dsock, packet.getAddress(), packet.getPort(), "Intro statement is invalid: \"" + data + "\" does not match \"hello, i am \"");
+                }
+                client.setClientName(data.split(INTRO)[1]);
+
+                //Create a new file for client or clear a pre-existing client file
+                client.setFile(new File(client.getClientName()+".txt"));
+                FileWriter fw = new FileWriter(client.getFile(), false);
+                fw.write("");
+                fw.close();
+
+                //Set server response packet's destination address and dest port using source address and src port
+                var response = new DatagramPacket(bytes, bytes.length);
+                response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
+                response.setPort(packet.getPort());         //Set destination port as the source port of received packet
+
+                //Set content of server response packet
+                bb.putShort(HELLO).putInt(client.getConvoNum()).put(INTRO.getBytes()).put(client.getClientName().getBytes()).flip();
+                response.setLength(bb.remaining());
+
+                //Send server response packet
+                dsock.send(response);
+                System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+            }
+            else if(type==TRANSFER) {
+                System.out.println("Packet "+count++);
+                //Fetch the client from the clientList using the conversation number in the packet.
+                //If the client doesn't exist in the map (meaning Hello has not been sent, send an error)
+
+                HelloUDPServer client;
+                if((client=clientList.get(bb.getInt()))==null) {
+                    sendError(dsock, packet.getAddress(), packet.getPort(), "Client unknown: Transfer");
+                }
+                //Otherwise, continue with protocol
+                else {
+                    System.out.println("From " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+                    bb.clear();
+                    dsock.receive(transFile);
+
+                    try {
+//                        client.setFile(new File(""+client.getClientName()+".txt"));
+                        FileWriter fw = new FileWriter((client.getFile()), true);
+
+                        fw.write(new String(transFile.getData(), 10, transFile.getLength()-10));
+                        fw.close();
+                    } catch (IOException e) {
+                        sendError(dsock, packet.getAddress(), packet.getPort(), "File transfer error occurred");
+                        System.exit(2);
+                    }
+
+                    //Set server response packet's destination address and dest port using source address and src port
+                    var response = new DatagramPacket(bytes, bytes.length);
+                    response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
+                    response.setPort(packet.getPort());         //Set destination port as the source port of received packet
+
+                    bb.putShort(TRANSFER).putInt(client.getConvoNum()).putInt(transFile.getOffset()).flip();
+                    response.setLength(bb.remaining());
+
+                    dsock.send(response);
+                    System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+                }
+            }
+
+            else if(type==CHECKSUM) {
+                //Fetch the client from the clientList using the conversation number in the packet.
+                //If the client doesn't exist in the map (meaning Hello has not been sent, send an error)
+                HelloUDPServer client;
+                if((client=clientList.get(bb.getInt()))==null) {
+                    sendError(dsock, packet.getAddress(), packet.getPort(), "Client unknown: Checksum");
+                }
+                //Otherwise, continue with protocol
+                else {
+                    System.out.println("From " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+                    bb.clear();
+                    bb.position(0);
+                    int typeNum = bb.getShort();    //skip the type
+                    int cNum = bb.getInt();         //skip the conversation number
+                    double clientCheckSum = bb.getDouble();
+                    try {
+                        byte[] fileData = Files.readAllBytes(Paths.get(client.getClientName().concat(".txt")));
+                        byte[] SHAHash = MessageDigest.getInstance("SHA-256").digest(fileData);
+                        var shaBuffer = ByteBuffer.wrap(SHAHash);
+                        var serverCheckSum = shaBuffer.getDouble();
+                        char responseByte = 1;
+                        if(clientCheckSum==serverCheckSum) {
+                            responseByte=0;
+                        }
+
+                        var response = new DatagramPacket(bytes, bytes.length);
+                        response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
+                        response.setPort(packet.getPort());         //Set destination port as the source port of received packet
+                        bb.clear().putShort(CHECKSUM).putInt(client.getConvoNum()).putChar(responseByte).flip();
+                        response.setLength(bb.remaining());
+
+                        dsock.send(response);
+                        System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+                    } catch(NoSuchAlgorithmException e) {
+                        sendError(dsock, packet.getAddress(), packet.getPort(), "Trouble occurred in calculating checksum");
+                        System.exit(2);
+                    }
+                }
+            }
+            else {
+                sendError(dsock, packet.getAddress(), packet.getPort(), "Invalid type was received");
+            }
+        }
+//        bb.clear(); //Cleanup, probably not needed
+    }
+    static int setPort(String portString) {
+        try {
+            int portNum = Integer.parseInt(portString);
+            if (portNum < 0 || portNum > 65535) throw new NumberFormatException();
+            return portNum;
+        } catch (Exception e) {
+            System.err.println(usageErrorInvalidPort);
+            System.exit(2);
+        }
+        return 0; //code will never reach here
+    }
     static void sendError(DatagramSocket dsock, InetAddress address, int port, String errMessage) throws IOException {
         var bytes = new byte[512];
         var bb = ByteBuffer.wrap(bytes);
@@ -66,141 +217,41 @@ public class HelloUDPServer {
         //Send server response packet
         dsock.send(response);
     }
-
-
-    static void receiveAndSend(DatagramSocket dsock, HelloUDPServer client) throws IOException {
-        var bytes = new byte[512];
-        var bb = ByteBuffer.wrap(bytes);
-        var packet = new DatagramPacket(bytes, bytes.length);   //Packet to be sent to client
-        var transFile = new DatagramPacket(bytes, bytes.length); //File to be received from transfer
-        short type=4; //Not a valid conversation type, will throw error if type is not changed or is invalid
-
-        try {
-            dsock.setSoTimeout(10000);
-            dsock.receive(packet);
-            //Get Type of conversation
-            type = bb.getShort();
-            System.out.println("From " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
-        } catch (SocketTimeoutException e) {
-            if(packet.getAddress()==null) {System.err.println("Took longer than 10 seconds"); }
-            else {sendError(dsock, packet.getAddress(), packet.getPort(), "Took longer than 10 seconds");}
+    static void checkArgs(String[] arguments) {
+        //usageErrorMissingPort: Port number is unspecified, throw error
+        if (arguments.length==0) {
+            System.err.println(usageErrorMissingPort);
+            System.exit(2);
         }
-
-        //Receive and respond to initial HELLO packet from client
-        if(type==HELLO) {
-            bb.clear();
-            //Verify that the intro statement is correct and then extract client name
-            String data = new String(bytes, 2, packet.getLength()-2);
-            if (!data.split("hello, i am ")[0].equals("")) {
-                sendError(dsock, packet.getAddress(), packet.getPort(), "Intro statement is invalid: \"" + data + "\" does not match \"hello, i am \"");
+        //usageErrorUnmatchedArgs: There are extra arguments, throw error
+        if (arguments.length>1) {
+            StringBuilder str = new StringBuilder();
+            str.append("Unmatched arguments from index 1:");
+            for(int i=1; i<arguments.length;i++) {
+                str.append(" '").append(arguments[i]).append("',");
             }
-            client.setClientName(data.split("hello, i am ")[1]);
-            //Set server response packet's destination address and dest port using source address and src port
-//                bb.clear();
-            var response = new DatagramPacket(bytes, bytes.length);
-            response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
-            response.setPort(packet.getPort());         //Set destination port as the source port of received packet
-
-            //Set content of server response packet
-            bb.putShort(HELLO).putInt(client.getConvoNum()).put(INTRO.getBytes()).put(client.getClientName().getBytes()).flip();
-            response.setLength(bb.remaining());
-
-//                //Used for checking contents of server response packet, comment out later
-//                String res = new String(bytes, 6, response.getLength()-6);
-//                System.out.println("HELLO: "+bb.getShort()+" "+bb.getInt()+" "+res);
-
-            //Send server response packet
-            dsock.send(response);
-            System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
+            str.deleteCharAt(str.length()-1); //Delete the comma at the end before appending
+            str.append("\nUsage: HelloUDPServer <port>\n" +
+                    "A UDP server that implements the HelloUDP protocol.\n" +
+                    "      <port>   port to listen on.");
+            System.err.println(str);
+            System.exit(2);
         }
-
-        if(type==TRANSFER) {
-            bb.clear();
-            dsock.receive(transFile);
-
-            try {
-                client.setFile(new File(""+client.getClientName()+".txt"));
-                FileWriter fw = new FileWriter((client.getFile()));
-
-                fw.write(new String(transFile.getData(), 10, transFile.getLength()-10));
-                fw.close();
-            } catch (IOException e) {
-                sendError(dsock, packet.getAddress(), packet.getPort(), "File transfer error occurred");
-                System.exit(0);
-            }
-
-            //Set server response packet's destination address and dest port using source address and src port
-            var response = new DatagramPacket(bytes, bytes.length);
-            response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
-            response.setPort(packet.getPort());         //Set destination port as the source port of received packet
-
-            bb.putShort(TRANSFER).putInt(client.getConvoNum()).putInt(transFile.getOffset()).flip();
-            response.setLength(bb.remaining());
-
-            dsock.send(response);
-            System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
-        }
-
-        if(type==CHECKSUM) {
-            bb.clear();
-            bb.position(0);
-            int typeNum = bb.getShort();    //skip the type
-            int cNum = bb.getInt();         //skip the conversation number
-            double clientCheckSum = bb.getDouble();
-            try {
-                byte[] fileData = Files.readAllBytes(Paths.get(client.getClientName().concat(".txt")));
-                byte[] SHAHash = MessageDigest.getInstance("SHA-256").digest(fileData);
-                var shaBuffer = ByteBuffer.wrap(SHAHash);
-                var serverCheckSum = shaBuffer.getDouble();
-                char responseByte = 1;
-                if(clientCheckSum==serverCheckSum) {
-                    responseByte=0;
-                }
-
-                var response = new DatagramPacket(bytes, bytes.length);
-                response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
-                response.setPort(packet.getPort());         //Set destination port as the source port of received packet
-                bb.clear().putShort(CHECKSUM).putInt(convoNum).putChar(responseByte).flip();
-                response.setLength(bb.remaining());
-
-                dsock.send(response);
-                System.out.println("To " + packet.getSocketAddress()+": "+ type + " " + client.getConvoNum());
-            } catch(NoSuchAlgorithmException e) {
-                sendError(dsock, packet.getAddress(), packet.getPort(), "Trouble occurred in calculating checksum");
-                System.exit(0);
-            }
-        }
-        bb.clear(); //Cleanup, probably not needed
     }
-    static int setPort(String portString) {
-        try {
-            int portNum = Integer.parseInt(portString);
-            if (portNum < 0 || portNum > 65535) throw new NumberFormatException();
-            return portNum;
-        } catch (Exception e) {
-            System.out.println("port must be a number between 0 and 65535");
-            e.printStackTrace();
-        }
-        return 0; //code will never reach here
-    }
-
-    static int getPort() {
-        return port;
-    }
-    static int getConvoNum() {
+     int getConvoNum() {
         return convoNum;
     }
-    static void setClientName(String name) {
+     void setClientName(String name) {
         clientName = name;
     }
-    static String getClientName() {
+     String getClientName() {
         return clientName;
     }
-    static void setFile(File file) {
+     void setFile(File file) {
         clientFile = file;
     }
 
-    static File getFile() {
+     File getFile() {
         return clientFile;
     }
 }
