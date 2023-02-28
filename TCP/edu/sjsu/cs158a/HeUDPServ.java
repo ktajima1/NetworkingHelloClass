@@ -1,11 +1,12 @@
 package edu.sjsu.cs158a;
 
 import javax.xml.crypto.Data;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.*;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -17,22 +18,24 @@ public class HeUDPServ {
     final static private short TRANSFER = 2;
     final static private short CHECKSUM = 3;
     final static private short ERROR = 5;
-    private static final int retryLimit = 10;
     public static final String INTRO = "hello, i am ";
 
     private static int port;
     private static int convoNum;
-    private static File file; //File to be transferred
+    private static String clientName;
+    private static File clientFile; //File to be transferred
 
     public HeUDPServ(String port, int convoNum) {
         this.port = setPort(port);
         this.convoNum = convoNum;
     }
-
+    static String usageError = "Missing required parameter: '<port>'\n" +
+            "Usage: HelloUDPServer <port>\n" +
+            "A UDP server that implements the HelloUDP protocol.\n" +
+            "      <port>   port to listen on.";
     public static void main(String[] args) throws IOException {
         if (args.length==0) {
-            System.out.println("Missing required parameter: '<port>'");
-            System.exit(0);
+            System.err.println(usageError);
         }
         //Client conversation number (will increment as number of clients increase)
         int convoNum = 1;
@@ -66,13 +69,14 @@ public class HeUDPServ {
         var bytes = new byte[512];
         var bb = ByteBuffer.wrap(bytes);
         var packet = new DatagramPacket(bytes, bytes.length);
+        var transFile = new DatagramPacket(bytes, bytes.length); //File to be received from transfer
+
         while (true) {
             try {
                 dsock.setSoTimeout(10000);
                 dsock.receive(packet);
             } catch (SocketTimeoutException e) {
                 sendError(dsock, packet.getAddress(), packet.getPort(), "Took longer than 10 seconds");
-                System.exit(0);
             }
             //Get type of message
             short type = bb.getShort();
@@ -85,8 +89,7 @@ public class HeUDPServ {
                 if (!data.split("hello, i am ")[0].equals("")) {
                     sendError(dsock, packet.getAddress(), packet.getPort(), "Intro statement is invalid: \"" + data + "\" does not match \"hello, i am \"");
                 }
-                String clientName = data.split("hello, i am ")[1];
-
+                client.setClientName(data.split("hello, i am ")[1]);
                 //Set server response packet's destination address and dest port using source address and src port
 //                bb.clear();
                 var response = new DatagramPacket(bytes, bytes.length);
@@ -94,7 +97,7 @@ public class HeUDPServ {
                 response.setPort(packet.getPort());         //Set destination port as the source port of received packet
 
                 //Set content of server response packet
-                bb.putShort(HELLO).putInt(client.getConvoNum()).put(INTRO.getBytes()).put(clientName.getBytes()).flip();
+                bb.putShort(HELLO).putInt(client.getConvoNum()).put(INTRO.getBytes()).put(client.getClientName().getBytes()).flip();
                 response.setLength(bb.remaining());
 
 //                //Used for checking contents of server response packet, comment out later
@@ -104,13 +107,20 @@ public class HeUDPServ {
                 //Send server response packet
                 dsock.send(response);
             }
-            if(type==TRANSFER) {
-                System.out.println("I've reached file transfer segment");
-                bb.clear();
 
-                var transFile = new DatagramPacket(bytes, bytes.length);
+            if(type==TRANSFER) {
+                bb.clear();
                 dsock.receive(transFile);
-//                System.out.println(new String(transFile.getData(), 10, transFile.getLength()-10));
+
+                try {
+                    client.setFile(new File(""+client.getClientName()+".txt"));
+                    FileWriter fw = new FileWriter((client.getFile()));
+
+                    fw.write(new String(transFile.getData(), 10, transFile.getLength()-10));
+                    fw.close();
+                } catch (IOException e) {
+                    sendError(dsock, packet.getAddress(), packet.getPort(), "File transfer error occurred");
+                }
 
                 //Set server response packet's destination address and dest port using source address and src port
                 var response = new DatagramPacket(bytes, bytes.length);
@@ -124,9 +134,35 @@ public class HeUDPServ {
             }
 
             if(type==CHECKSUM) {
-                System.out.println("Reached checksum segment");
-            }
+                bb.clear();
+                bb.position(0);
+                int typeNum = bb.getShort();    //skip the type
+                int cNum = bb.getInt();         //skip the conversation number
+                double clientCheckSum = bb.getDouble();
+                try {
+                    byte[] fileData = Files.readAllBytes(Paths.get(client.getClientName().concat(".txt")));
+                    byte[] SHAHash = MessageDigest.getInstance("SHA-256").digest(fileData);
+                    var shaBuffer = ByteBuffer.wrap(SHAHash);
+                    var serverCheckSum = shaBuffer.getDouble();
+                    char responseByte = 1;
+                    if(clientCheckSum==serverCheckSum) {
+                        responseByte=0;
+                    }
 
+                    var response = new DatagramPacket(bytes, bytes.length);
+                    response.setAddress(packet.getAddress());   //Set response packet address to the source address of received packet
+                    response.setPort(packet.getPort());         //Set destination port as the source port of received packet
+                    bb.clear().putShort(CHECKSUM).putInt(convoNum).putChar(responseByte).flip();
+                    response.setLength(bb.remaining());
+
+                    dsock.send(response);
+                } catch(NoSuchAlgorithmException e) {
+                    sendError(dsock, packet.getAddress(), packet.getPort(), "Trouble occurred in calculating checksum");
+                }
+            }
+            else {
+                sendError(dsock, packet.getAddress(), packet.getPort(), "Invalid type byte sent");
+            }
 //          Idk if this is needed, but here just in case
             bb.position(0);
         }
@@ -148,6 +184,19 @@ public class HeUDPServ {
     }
     static int getConvoNum() {
         return convoNum;
+    }
+    static void setClientName(String name) {
+        clientName = name;
+    }
+    static String getClientName() {
+        return clientName;
+    }
+    static void setFile(File file) {
+        clientFile = file;
+    }
+
+    static File getFile() {
+        return clientFile;
     }
 }
 
