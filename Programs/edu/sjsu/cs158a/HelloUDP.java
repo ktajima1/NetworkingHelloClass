@@ -230,7 +230,6 @@ public class HelloUDP implements Callable<Integer> {
                             info("success! Took about {0}ms\n", (System.currentTimeMillis() - startClock));
                         }
                     } else {
-//                        System.out.printf("failure: {0}", rc);
                         error("failure: {0}", rc);
                     }
                 } catch (IOException | NoSuchAlgorithmException | InterruptedException e) {
